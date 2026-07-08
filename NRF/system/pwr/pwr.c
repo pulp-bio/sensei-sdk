@@ -152,10 +152,10 @@ int pwr_start() {
     return -1;
   }
 
-  if (pwr_bsp_start()) {
-    LOG_ERR("PMIC BSP Start failed!");
-    return -1;
-  }
+  //if (pwr_bsp_start()) {
+  //  LOG_ERR("PMIC BSP Start failed!");
+  //  return -1;
+  //}
 
   thread_pwr_start();
 
