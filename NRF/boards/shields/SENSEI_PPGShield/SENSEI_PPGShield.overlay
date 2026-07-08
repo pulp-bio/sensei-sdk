@@ -1,0 +1,22 @@
+/*
+ * Copyright (c) 2025 ETH Zurich and University of Bologna
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * SENSEI PPG shield: 1-8 MAXM86161 sensors behind a TCA9548A 8-channel
+ * I2C mux on I2C_B (SCL P1.10 / SDA P0.24, defined in the board DTS).
+ * The MAXM86161 devices (addr 0x62) sit behind the mux channels and are
+ * driven by the application (sensors/ppg_new), not by a Zephyr driver.
+ *
+ * Shield GPIOs (defined in the application overlay, listed here for
+ * reference because they conflict with the ExG/EMG shields):
+ *   PPG SYNC trigger = P0.31 (conflicts with ADS power enable)
+ *   PPG INTB wired-OR = P0.12 (conflicts with PDM mic DATA)
+ */
+
+&i2c1 {
+	tca9548a: tca9548a@70 {
+		compatible = "i2c-device";
+		reg = <0x70>;
+		label = "TCA9548A_I2C_MUX";
+	};
+};

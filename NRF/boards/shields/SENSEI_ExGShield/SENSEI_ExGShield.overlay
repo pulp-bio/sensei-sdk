@@ -1,0 +1,68 @@
+/*
+ * Copyright (c) 2025 ETH Zurich and University of Bologna
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * SENSEI ExG shield (dual ADS1298 bio-potential AFE).
+ *
+ * The shield sits on SPI_A (SPIM4, defined in the board DTS:
+ * SCK P0.08 / MOSI P0.09 / MISO P0.10). Chip selects are software
+ * controlled GPIOs because two ADS1298 devices share the bus:
+ *   ADS1298 A CS = P0.11 (J2 pin 28, SPI_A_CS)
+ *   ADS1298 B CS = P1.09 (J4 pin 8)
+ * Further shield signals:
+ *   START (both devices) = P1.00, DRDY A = P0.02, DRDY B = P0.03
+ *   ADS power enable     = P0.31 (also present on the EMG shield)
+ */
+
+/ {
+	sensei_pwr: sensei_pwr {
+		compatible = "gpio-leds";
+		gpio_ads1298_pwr: gpio_ads1298_pwr {
+			gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+			label = "ADS1298_PWR";
+		};
+	};
+
+	gpio_nodes {
+		compatible = "gpio-leds";
+
+		gpio_ads1298_a_spi_cs: gpio_ads1298_a_spi_cs {
+			gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
+			label = "ADS1298_A_SPI_CS";
+		};
+
+		gpio_ads1298_b_spi_cs: gpio_ads1298_b_spi_cs {
+			gpios = <&gpio1 9 GPIO_ACTIVE_LOW>;
+			label = "ADS1298_B_SPI_CS";
+		};
+
+		gpio_ads1298_start_pin: gpio_ads1298_start_pin {
+			gpios = <&gpio1 0 GPIO_ACTIVE_HIGH>;
+			label = "ADS1298_START_PIN";
+		};
+	};
+
+	buttons {
+		gpio_ads1298_a_dr: gpio_ads1298_a_dr {
+			gpios = <&gpio0 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "ADS1298_A_DR";
+		};
+		gpio_ads1298_b_dr: gpio_ads1298_b_dr {
+			gpios = <&gpio0 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "ADS1298_B_DR";
+		};
+	};
+};
+
+/* ADS1298 device on the shared SPI_A bus (bus/pinctrl defined in the
+ * board DTS). No cs-gpios on the controller: CS is asserted per device
+ * by the application (gpio_ads1298_a/b_spi_cs above). */
+&spi_a {
+	ads1298_a: ads1298_a@0 {
+		compatible = "ti,ads1298_a";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		duplex = <1>;              /* Full duplex */
+		frame-format = <0>;        /* Standard SPI frame format */
+	};
+};
