@@ -1,0 +1,37 @@
+
+/*
+ * Copyright (c) 2022 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+ */
+
+
+
+/ {
+	gpio_nodes {
+		compatible = "gpio-leds";
+
+		gpio_nrf_esp_cs: gpio_nrf_esp_cs {
+			gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
+		};
+
+		gpio_nrf_esp_shield_drdy: gpio_nrf_esp_shield_drdy {
+			gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+		};
+
+		gpio_nrf_sd_cs: gpio_nrf_sd_cs {
+			gpios = <&gpio0 16 GPIO_ACTIVE_HIGH>;
+		};
+
+		gpio_nrf_qspi_cs: gpio_nrf_qspi_cs {
+			gpios = <&gpio0 18 GPIO_ACTIVE_LOW>;
+		};
+		gpio_nrf_qspi_cs_sel: gpio_nrf_qspi_cs_sel {
+			gpios = <&gpio0 19 GPIO_ACTIVE_LOW>;
+		};
+
+	};
+};
+
+
+
