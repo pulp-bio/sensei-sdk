@@ -40,9 +40,11 @@
 		//uartgap = &uart_gap;
 	};
 	buttons{
-		gpio_lis2duxs12_int1: gpio_lis2duxs12_int1 {
+		/* IMU INT1 (net IMU_INT1): LSM6DSV16BX since the 2026 mainboard
+		 * revision, LIS2DUXS12 on older boards. */
+		gpio_imu_int1: gpio_imu_int1 {
 			gpios = <&gpio0 23 GPIO_ACTIVE_HIGH>;
-			label = "LIS2DUXS12_INT";
+			label = "IMU_INT1";
 		};
 		/* Active low: reset is requested when the line is pulled to GND.
 		 * Internal pull-up keeps the line high while idle. */
