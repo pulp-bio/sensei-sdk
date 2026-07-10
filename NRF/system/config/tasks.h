@@ -43,6 +43,14 @@
 #define THREAD_PWR_UPDATE_PERIOD_MS (1000 * 20)
 #endif
 
+/** Minimum period in ms between quiet-cycle measurements while the
+ * application gate vetoes full cycles (e.g. during ExG streaming). The
+ * thread still wakes every THREAD_PWR_UPDATE_PERIOD_MS so it resumes full
+ * cycles promptly once the veto ends. */
+#ifndef THREAD_PWR_QUIET_UPDATE_PERIOD_MS
+#define THREAD_PWR_QUIET_UPDATE_PERIOD_MS (1000 * 120)
+#endif
+
 /** // Period in msat which the charger configuration is re-applied to the PMIC */
 #ifndef THREAD_PWR_CHARGER_RECONIFG_PERIOD_MS
 #define THREAD_PWR_CHARGER_RECONIFG_PERIOD_MS (1000 * 60 * 25)
@@ -50,5 +58,13 @@
 
 #ifndef THREAD_PWR_SOFT_RESET_LATENCY_MS
 #define THREAD_PWR_SOFT_RESET_LATENCY_MS 2000
+#endif
+
+/** Long-press (nEN down -> soft-reset release) shutdown via pwr_kill().
+ * Applications that implement their own button/shutdown handling (e.g.
+ * BioGAP: any press -> factory ship mode in main.c) must set this to 0,
+ * otherwise both shutdown paths race on a button press. */
+#ifndef CONFIG_PWR_LONG_PRESS_KILL
+#define CONFIG_PWR_LONG_PRESS_KILL 1
 #endif
 #endif // TASKS_H_

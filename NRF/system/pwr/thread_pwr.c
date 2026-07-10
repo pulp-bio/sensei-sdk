@@ -67,7 +67,24 @@ atomic_t battery_perc = ATOMIC_INIT(0);
 // Current battery voltage (mV):
 atomic_t battery_mV = ATOMIC_INIT(0);
 
+// Extended PMIC telemetry, refreshed by check_telemetry() every thread cycle.
+// All values are cached in atomics so readers never touch the PMIC/I2C.
+atomic_t pwr_status_flags = ATOMIC_INIT(0);  // Bitmask of PWR_STATUS_FLAG_*
+atomic_t pwr_chg_details = ATOMIC_INIT(0);   // Raw max77654_chg_dtls_t
+atomic_t pwr_vsys_mV = ATOMIC_INIT(0);       // System voltage (mV)
+atomic_t pwr_chgin_mV = ATOMIC_INIT(0);      // Charger input voltage (mV), 0 if unplugged
+atomic_t pwr_chgin_dmA = ATOMIC_INIT(0);     // Charger input current (0.1 mA), 0 if unplugged
+atomic_t pwr_batt_dmA = ATOMIC_INIT(0);      // Battery current (0.1 mA): charge current while
+                                             // charging, discharge current otherwise
+atomic_t pwr_chgin_power_mW = ATOMIC_INIT(0); // Charger input power (mW), 0 if unplugged
+atomic_t pwr_batt_power_mW = ATOMIC_INIT(0);  // Battery-side power (mW): into the battery while
+                                              // charging, out of the battery otherwise
+
 atomic_t gap9_pwr_state = ATOMIC_INIT(0);
+
+/* Set on PMIC nIRQ: the cached charger status (pmic.status) may be stale.
+ * Cleared when a full cycle re-reads the status registers. */
+static atomic_t pmic_status_dirty = ATOMIC_INIT(0);
 
 // PMIC interrupt callback:
 static struct gpio_callback pmic_int_cb;
@@ -85,6 +102,9 @@ static int check_status();
 
 // Measure the current battery percentage:
 static int check_battery();
+
+// Measure VSYS/CHGIN/battery currents and update the telemetry atomics:
+static int check_telemetry();
 
 // Handle interrupts from the PMIC:
 static int handle_interrupts();
@@ -135,7 +155,11 @@ int thread_pwr_init() {
     return -1;
   }
 
+  // Populate all caches once so readers get valid data even before the
+  // thread's first cycle (or if the thread is never started):
+  check_status();
   check_battery();
+  check_telemetry();
 
   return 0;
 }
@@ -145,6 +169,9 @@ static void thread_pwr(void *_a, void *_b, void *_c) {
 
   // Keep track of the last time the charger was re-configured (millisec):
   int64_t last_reconfig_ms = k_uptime_get();
+
+  // Last measurement time, for the slower quiet-cycle cadence (millisec):
+  int64_t last_meas_ms = k_uptime_get();
 
   last_keydown_ms = 0;
   last_keyup_ms = 0;
@@ -160,36 +187,75 @@ static void thread_pwr(void *_a, void *_b, void *_c) {
       goto skip_update;
     }
 
-    // Grab current PMIC status, issuing charger on / charger off events:
-    if (check_status() < 0) {
-      err = -1;
-    }
+    /* Applications can veto part of the PMIC activity in phases where it
+     * would disturb them. Measured on BioGAP (ExG streaming, noise-
+     * injection sweep): I2C READ transactions from the PMIC inject noise
+     * into the ExG signals - during a read the PMIC sinks the SDA pull-up
+     * current through its own die ground, and that ground bounce couples
+     * into the regulators feeding the AFE. I2C WRITES and AMUX/SAADC
+     * measurements are clean. So while vetoed, run a reduced "quiet"
+     * cycle: keep the write-only measurements (voltage, currents, power)
+     * live, and skip everything that reads from the PMIC (status
+     * registers, charger pause/reconfig). The cached status flags are
+     * reused; if a PMIC interrupt signals that they may be stale (USB
+     * plugged/unplugged), hold everything until the next full cycle. */
+    if (pwr_measurements_allowed()) {
 
-    // Measure battery level, issuing battery ok / critical / low events:
-    if (check_battery() < 0) {
-      err = -1;
-    }
+      atomic_clear(&pmic_status_dirty);
+      last_meas_ms = k_uptime_get();
 
-    // Handle interrupts from PMIC
-    if (handle_interrupts() < 0) {
-      err = -1;
+      // Grab current PMIC status, issuing charger on / charger off events:
+      if (check_status() < 0) {
+        err = -1;
+      }
+
+      // Measure VSYS/CHGIN/battery currents and derived power (uses the
+      // previous cycle's battery voltage for the power values, where the
+      // staleness is negligible):
+      if (check_telemetry() < 0) {
+        err = -1;
+      }
+
+      // Measure battery level, issuing battery ok / critical / low events:
+      if (check_battery() < 0) {
+        err = -1;
+      }
+
+      // Handle interrupts from PMIC
+      if (handle_interrupts() < 0) {
+        err = -1;
+      }
+
+      // Re-apply charger configuration periodically. Recommended by PMIC Datasheet.
+      if ((k_uptime_get() - last_reconfig_ms) > THREAD_PWR_CHARGER_RECONIFG_PERIOD_MS) {
+        last_reconfig_ms = k_uptime_get();
+        LOG_INF("Re-applying PMIC configuration");
+        if (reapply_config() < 0) {
+          err = -1;
+        };
+      }
+    } else if (!atomic_get(&pmic_status_dirty) && !pmic.status.charging_active &&
+               (k_uptime_get() - last_meas_ms) >= THREAD_PWR_QUIET_UPDATE_PERIOD_MS) {
+      /* Quiet cycle: write-only measurements against the cached (frozen)
+       * status flags, at the slower THREAD_PWR_QUIET_UPDATE_PERIOD_MS
+       * cadence. Not while charging - the rest-voltage sampling in
+       * check_battery would toggle the charger (a read-modify-write, and a
+       * charge-current step); hold the values instead until the veto ends. */
+      last_meas_ms = k_uptime_get();
+      if (check_telemetry() < 0) {
+        err = -1;
+      }
+      if (check_battery() < 0) {
+        err = -1;
+      }
     }
 
     // Handle button press that are longer than 2 seconds
-    if (last_keyup_ms - last_keydown_ms > THREAD_PWR_SOFT_RESET_LATENCY_MS) {
+    if (CONFIG_PWR_LONG_PRESS_KILL && (last_keyup_ms - last_keydown_ms > THREAD_PWR_SOFT_RESET_LATENCY_MS)) {
       LOG_INF("Button pressed for more than 2 seconds");
       last_keydown_ms = 0;
       last_keyup_ms = 0;
       pwr_kill();
-    }
-
-    // Re-apply charger configuration periodically. Recommended by PMIC Datasheet.
-    if ((k_uptime_get() - last_reconfig_ms) > THREAD_PWR_CHARGER_RECONIFG_PERIOD_MS) {
-      last_reconfig_ms = k_uptime_get();
-      LOG_INF("Re-applying PMIC configuration");
-      if (reapply_config() < 0) {
-        err = -1;
-      };
     }
 
   skip_update:
@@ -209,6 +275,7 @@ static void thread_pwr(void *_a, void *_b, void *_c) {
 static void pmic_int_cb_handler(const struct device *port, struct gpio_callback *cb, gpio_port_pins_t pins) {
   LOG_DBG("PMIC interrupt!");
   last_keydown_ms = k_uptime_get();
+  atomic_set(&pmic_status_dirty, 1);
   k_sem_give(&pmic_update_sem);
 }
 
@@ -261,9 +328,27 @@ static int handle_interrupts() {
   return 0;
 }
 
-static int check_battery() {
+/* While charging, sample the cell's rest voltage every N thread cycles
+ * (~60 s at the default 20 s update period) by briefly pausing the charger.
+ * With external power attached the system runs from CHGIN, so the paused
+ * battery is unloaded and its terminal voltage relaxes towards the rest
+ * voltage that the percentage lookup is calibrated for. */
+#define CHG_REST_SAMPLE_PERIOD_CYCLES 3
 
-  // Measure battery 3 times:
+/* Relaxation time between pausing the charger and measuring. Keep the total
+ * pause well below 500 ms: that is the pwr_mutex timeout after which
+ * app-side rail helpers proceed unlocked. */
+#define CHG_REST_SETTLE_MS 350
+
+/* With no battery attached, the BATT pin is driven by the charger towards
+ * the VSYS regulation point and reads ~4.5 V - far above any real LiPo
+ * terminal voltage (<= ~4.25 V at full charge). Readings above this
+ * threshold therefore mean "no battery": report 0 mV / 0 % instead of
+ * pretending a full battery is present. */
+#define BATT_ABSENT_THRESHOLD_MV 4300
+
+// Measure the battery voltage 3 times and average (ignoring flukes):
+static int measure_batt_mV_avg(uint32_t *out_mV) {
   uint32_t battery_mV_avg = 0;
   uint32_t measurements = 0;
 
@@ -295,15 +380,184 @@ static int check_battery() {
   }
 
   // Average the performed measurements:
-  battery_mV_avg /= measurements;
+  *out_mV = battery_mV_avg / measurements;
+  return 0;
+}
 
-  // LOG_INF("Battery Average Voltage: %i mV", battery_mV_avg);
+static int check_battery() {
+  const struct max77654_stat *st = &pmic.status; // Filled by check_status()
+  static uint32_t rest_sample_countdown;
 
-  // Store battery mV:
-  atomic_set(&battery_mV, battery_mV_avg);
+  bool chg_done = (st->charger_status == MAX77654_CHG_DTLS_DONE ||
+                   st->charger_status == MAX77654_CHG_DTLS_DONE_JEITA);
 
-  // Convert the mV reading to percentage and store:
-  atomic_set(&battery_perc, battery_perc_conversion(battery_mV_avg));
+  if (st->charging_active && !chg_done) {
+    /* While the charger runs, the terminal voltage tracks the charger, not
+     * the cell, so a live reading is useless for the percentage. Pause the
+     * charger, let the cell relax, measure its near-rest voltage, resume.
+     * Between samples, hold the last values. The pause is invisible to
+     * hosts: all BLE-visible state is served from the cache, which was
+     * filled before the pause. */
+    if (rest_sample_countdown > 0) {
+      rest_sample_countdown--;
+      return 0;
+    }
+    rest_sample_countdown = CHG_REST_SAMPLE_PERIOD_CYCLES - 1;
+
+    if (max77654_set_charger_enabled(&pmic_h, false) != E_MAX77654_SUCCESS) {
+      LOG_ERR("charger pause failed!");
+      return -1;
+    }
+
+    k_sleep(K_MSEC(CHG_REST_SETTLE_MS));
+
+    uint32_t rest_mV = 0;
+    int err = measure_batt_mV_avg(&rest_mV);
+
+    // Always resume charging, even if the measurement failed:
+    if (max77654_set_charger_enabled(&pmic_h, true) != E_MAX77654_SUCCESS) {
+      LOG_ERR("charger resume failed!");
+      err = -1;
+    }
+
+    if (err < 0) {
+      return -1;
+    }
+
+    if (rest_mV > BATT_ABSENT_THRESHOLD_MV) {
+      // No battery attached:
+      atomic_set(&battery_mV, 0);
+      atomic_set(&battery_perc, 0);
+      return 0;
+    }
+
+    atomic_set(&battery_mV, rest_mV);
+
+    // Leave 100% to the charger's DONE signal:
+    uint32_t perc = battery_perc_conversion(rest_mV);
+    if (perc > 99) {
+      perc = 99;
+    }
+    atomic_set(&battery_perc, perc);
+    return 0;
+  }
+
+  // Not actively charging: measure directly. Reset the countdown so the
+  // first rest sample happens right after charging starts:
+  rest_sample_countdown = 0;
+
+  uint32_t mV = 0;
+  if (measure_batt_mV_avg(&mV) < 0) {
+    return -1;
+  }
+
+  if (mV > BATT_ABSENT_THRESHOLD_MV) {
+    // No battery attached (the pin is driven by the charger/VSYS):
+    atomic_set(&battery_mV, 0);
+    atomic_set(&battery_perc, 0);
+    return 0;
+  }
+
+  atomic_set(&battery_mV, mV);
+  atomic_set(&battery_perc, chg_done ? 100 : battery_perc_conversion(mV));
+
+  return 0;
+}
+
+/* Convert a fast-charge constant-current setting to 0.1 mA units.
+ * The CHG_CC code is (I / 7.5mA) - 1, so I = (code + 1) * 7.5 mA. */
+static uint16_t chg_cc_to_dmA(max77654_chg_cc_t cc) { return ((uint16_t)cc + 1) * 75; }
+
+/* Measure the battery discharge current with a simple auto-range: start on
+ * the 103.4 mA scale, re-measure on 300 mA if railed or on 8.2 mA if tiny.
+ * The PMIC reports percent-of-fullscale, so the absolute resolution is
+ * ~1% of the selected scale. Result in 0.1 mA units. */
+static int measure_discharge_dmA(uint32_t *out_dmA) {
+  uint32_t pct;
+  if (max77654_measure(&pmic_h, MAX77654_BATT_I_103MA4, &pct) != E_MAX77654_SUCCESS) {
+    return -1;
+  }
+  if (pct >= 95) {
+    if (max77654_measure(&pmic_h, MAX77654_BATT_I_300MA, &pct) != E_MAX77654_SUCCESS) {
+      return -1;
+    }
+    *out_dmA = (pct * 3000) / 100;
+  } else if (pct < 8) {
+    if (max77654_measure(&pmic_h, MAX77654_BATT_I_8MA2, &pct) != E_MAX77654_SUCCESS) {
+      return -1;
+    }
+    *out_dmA = (pct * 82) / 100;
+  } else {
+    *out_dmA = (pct * 1034) / 100;
+  }
+  return 0;
+}
+
+static int check_telemetry() {
+  const struct max77654_stat *st = &pmic.status; // Filled by check_status()
+
+  uint32_t flags = 0;
+  bool chgin_present = (st->chgin_status == MAX77654_CHGIN_DTLS_OK);
+  bool charging = st->charging_active;
+
+  if (chgin_present) {
+    flags |= PWR_STATUS_FLAG_CHGIN_PRESENT;
+  }
+  if (charging) {
+    flags |= PWR_STATUS_FLAG_CHARGING;
+  }
+  if (st->charger_status == MAX77654_CHG_DTLS_PREQUAL_TIMER_FAULT ||
+      st->charger_status == MAX77654_CHG_DTLS_FASTCHARGE_TIMER_FAULT ||
+      st->charger_status == MAX77654_CHG_DTLS_BAT_TEMPERATURE_FAULT) {
+    flags |= PWR_STATUS_FLAG_CHG_FAULT;
+  }
+  if (st->thermal_alarm_1 || st->thermal_alarm_2) {
+    flags |= PWR_STATUS_FLAG_THERMAL_ALARM;
+  }
+
+  uint32_t vsys = 0;
+  if (max77654_measure(&pmic_h, MAX77654_VSYS, &vsys) != E_MAX77654_SUCCESS) {
+    LOG_ERR("pmic measure vsys failed!");
+    return -1;
+  }
+
+  uint32_t chgin_v = 0, chgin_i_dmA = 0, batt_i_dmA = 0;
+
+  if (chgin_present) {
+    uint32_t chgin_i_mA = 0;
+    if (max77654_measure(&pmic_h, MAX77654_CHGIN_V, &chgin_v) != E_MAX77654_SUCCESS ||
+        max77654_measure(&pmic_h, MAX77654_CHGIN_I, &chgin_i_mA) != E_MAX77654_SUCCESS) {
+      LOG_ERR("pmic measure chgin failed!");
+      return -1;
+    }
+    chgin_i_dmA = chgin_i_mA * 10;
+
+    if (charging) {
+      // Charge current is reported as percent of the fast-charge setting:
+      uint32_t pct = 0;
+      if (max77654_measure(&pmic_h, MAX77654_BATT_I_CHG, &pct) != E_MAX77654_SUCCESS) {
+        LOG_ERR("pmic measure charge current failed!");
+        return -1;
+      }
+      batt_i_dmA = (pct * chg_cc_to_dmA(pmic_h.conf.fast_chg_cc)) / 100;
+    }
+  } else {
+    // The discharge monitor is only meaningful without external power:
+    if (measure_discharge_dmA(&batt_i_dmA) < 0) {
+      LOG_ERR("pmic measure discharge current failed!");
+      return -1;
+    }
+  }
+
+  atomic_set(&pwr_vsys_mV, vsys);
+  atomic_set(&pwr_chgin_mV, chgin_v);
+  atomic_set(&pwr_chgin_dmA, chgin_i_dmA);
+  atomic_set(&pwr_batt_dmA, batt_i_dmA);
+  // mV * 0.1mA = 0.1 µW; /10000 -> mW
+  atomic_set(&pwr_chgin_power_mW, (chgin_v * chgin_i_dmA) / 10000);
+  atomic_set(&pwr_batt_power_mW, ((uint32_t)atomic_get(&battery_mV) * batt_i_dmA) / 10000);
+  atomic_set(&pwr_chg_details, st->charger_status);
+  atomic_set(&pwr_status_flags, flags);
 
   return 0;
 }

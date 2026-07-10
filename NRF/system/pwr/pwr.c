@@ -57,6 +57,12 @@ static const struct gpio_dt_spec gpio_led_pwr = GPIO_DT_SPEC_GET(GPIO_NODE_led_p
 
 static const struct device *pwr_i2c = DEVICE_DT_GET(DT_ALIAS(i2ca));
 
+/* Powering the LED rail in pwr_start() is optional so applications can keep
+ * every non-essential power domain off (e.g. BioGAP does not use the LED). */
+#ifndef CONFIG_PWR_START_LED_POWER
+#define CONFIG_PWR_START_LED_POWER 1
+#endif
+
 // PWR mutex:
 // Has to be held to operate on the power subsys. For the public pwr interface this is managed automatically.
 K_MUTEX_DEFINE(pwr_mutex);
@@ -147,7 +153,7 @@ int pwr_start() {
   __ASSERT_NO_MSG(atomic_get(&pwr_is_running) == false);
 
   // Power up LED
-  if (gpio_pin_set_dt(&gpio_led_pwr, 1) < 0) {
+  if (CONFIG_PWR_START_LED_POWER && gpio_pin_set_dt(&gpio_led_pwr, 1) < 0) {
     LOG_ERR("LED EN GPIO configuration error");
     return -1;
   }
@@ -227,6 +233,36 @@ uint32_t pwr_bat_perc() {
 uint32_t pwr_bat_mV() {
   __ASSERT_NO_MSG(atomic_get(&pwr_is_initialised) == true);
   return atomic_get(&battery_mV);
+}
+
+// Optional application veto for PMIC measurement activity:
+static bool (*pwr_measurement_gate)(void);
+
+void pwr_set_measurement_gate(bool (*allowed)(void)) { pwr_measurement_gate = allowed; }
+
+bool pwr_measurements_allowed(void) {
+  bool (*gate)(void) = pwr_measurement_gate;
+  return (gate == NULL) || gate();
+}
+
+void pwr_get_status(struct pwr_status *out) {
+  __ASSERT_NO_MSG(atomic_get(&pwr_is_initialised) == true);
+
+  uint32_t flags = atomic_get(&pwr_status_flags);
+
+  out->batt_mV = (uint16_t)atomic_get(&battery_mV);
+  out->batt_perc = (uint8_t)atomic_get(&battery_perc);
+  out->chgin_present = flags & PWR_STATUS_FLAG_CHGIN_PRESENT;
+  out->charging = flags & PWR_STATUS_FLAG_CHARGING;
+  out->chg_fault = flags & PWR_STATUS_FLAG_CHG_FAULT;
+  out->thermal_alarm = flags & PWR_STATUS_FLAG_THERMAL_ALARM;
+  out->chg_details = (uint8_t)atomic_get(&pwr_chg_details);
+  out->vsys_mV = (uint16_t)atomic_get(&pwr_vsys_mV);
+  out->chgin_mV = (uint16_t)atomic_get(&pwr_chgin_mV);
+  out->chgin_dmA = (uint16_t)atomic_get(&pwr_chgin_dmA);
+  out->batt_dmA = (uint16_t)atomic_get(&pwr_batt_dmA);
+  out->chgin_power_mW = (uint16_t)atomic_get(&pwr_chgin_power_mW);
+  out->batt_power_mW = (uint16_t)atomic_get(&pwr_batt_power_mW);
 }
 
 void gap9_pwr(bool on) {

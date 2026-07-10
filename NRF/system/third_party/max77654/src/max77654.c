@@ -263,6 +263,24 @@ max77654_err_t max77654_config_charger(const struct max77654_h *h) {
   return err;
 }
 
+max77654_err_t max77654_set_charger_enabled(const struct max77654_h *h, bool en) {
+  max77654_err_t err = E_MAX77654_SUCCESS;
+  err |= validate_handle(h);
+  if (err)
+    return err;
+
+  // CNFG_CHG_B, read-modify-write: only touch the CHG_EN bit.
+  uint8_t cnfg_chg_b = 0;
+  err |= h->read_regs(REG(CNFG_CHG_B), 1, &cnfg_chg_b);
+  if (err)
+    return err;
+
+  cnfg_chg_b = REG_FIELD_SET(CNFG_CHG_B, CHG_EN, cnfg_chg_b, en);
+  err |= h->write_regs(REG(CNFG_CHG_B), 1, &cnfg_chg_b);
+
+  return err;
+}
+
 max77654_err_t max77654_config_wdt(const struct max77654_h *h) {
   max77654_err_t err = E_MAX77654_SUCCESS;
   err |= validate_handle(h);

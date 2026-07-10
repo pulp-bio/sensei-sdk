@@ -71,6 +71,26 @@ extern atomic_t battery_perc;
  */
 extern atomic_t battery_mV;
 
+/** Bits of @ref pwr_status_flags: */
+#define PWR_STATUS_FLAG_CHGIN_PRESENT (1U << 0) //! External power on CHGIN
+#define PWR_STATUS_FLAG_CHARGING (1U << 1)      //! Charger actively charging
+#define PWR_STATUS_FLAG_CHG_FAULT (1U << 2)     //! Charger timer/temperature fault
+#define PWR_STATUS_FLAG_THERMAL_ALARM (1U << 3) //! PMIC junction thermal alarm
+
+/**
+ * @brief Extended PMIC telemetry, refreshed every thread cycle.
+ * @note 0 before first read, which is performed by thread_pwr_init.
+ * Prefer the snapshot getter pwr_get_status() over reading these directly.
+ */
+extern atomic_t pwr_status_flags;   //! Bitmask of PWR_STATUS_FLAG_*
+extern atomic_t pwr_chg_details;    //! Raw charger state (max77654_chg_dtls_t)
+extern atomic_t pwr_vsys_mV;        //! System voltage (mV)
+extern atomic_t pwr_chgin_mV;       //! Charger input voltage (mV), 0 if unplugged
+extern atomic_t pwr_chgin_dmA;      //! Charger input current (0.1 mA), 0 if unplugged
+extern atomic_t pwr_batt_dmA;       //! Battery current (0.1 mA); charge or discharge, see flags
+extern atomic_t pwr_chgin_power_mW; //! Charger input power (mW), 0 if unplugged
+extern atomic_t pwr_batt_power_mW;  //! Battery-side power (mW); direction per flags
+
 /**
  * @brief Current GAP9 power state.
  * @note 0 before first read, which is performed by thread_pwr_init.

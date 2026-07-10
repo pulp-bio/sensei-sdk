@@ -59,6 +59,61 @@ uint32_t pwr_bat_perc();
 // Note must be active or init?
 uint32_t pwr_bat_mV();
 
+/**
+ * @brief Snapshot of the cached battery/charger telemetry.
+ *
+ * Filled from atomics that the pwr thread refreshes periodically (and on
+ * PMIC interrupt) - reading a snapshot never touches the PMIC or the I2C
+ * bus, so it is safe from any context, including during data streaming.
+ */
+struct pwr_status {
+  uint16_t batt_mV;         //! Battery voltage (mV)
+  uint8_t batt_perc;        //! Battery state of charge (0-100 %), voltage-estimated
+  bool chgin_present;       //! External power present on CHGIN (USB)
+  bool charging;            //! Charger actively charging the battery
+  bool chg_fault;           //! Charger timer/temperature fault
+  bool thermal_alarm;       //! PMIC junction thermal alarm
+  uint8_t chg_details;      //! Raw charger state machine (max77654_chg_dtls_t)
+  uint16_t vsys_mV;         //! System voltage (mV)
+  uint16_t chgin_mV;        //! Charger input voltage (mV), 0 if unplugged
+  uint16_t chgin_dmA;       //! Charger input current (0.1 mA), 0 if unplugged
+  uint16_t batt_dmA;        //! Battery current (0.1 mA): charge current while charging,
+                            //! discharge current otherwise
+  uint16_t chgin_power_mW;  //! Charger input power (mW), 0 if unplugged
+  uint16_t batt_power_mW;   //! Battery-side power (mW): into the battery while charging,
+                            //! out of the battery otherwise
+};
+
+/**
+ * @brief Copy the current cached telemetry into @p out.
+ * @note Values are 0 until thread_pwr_init() has run (part of pwr_init()).
+ */
+void pwr_get_status(struct pwr_status *out);
+
+/**
+ * @brief Register a gate that can veto the noisy part of PMIC activity.
+ *
+ * While the gate returns false, the periodic power thread runs a reduced
+ * "quiet" cycle: write-only AMUX/SAADC measurements (battery voltage,
+ * VSYS, currents, power) stay live, but everything that READS from the
+ * PMIC is skipped - status registers, charger pause and charger reconfig.
+ * The cached status flags are reused; while charging (per the cached
+ * flags) or after a PMIC interrupt marks them stale, all values are held.
+ * Everything catches up on the next allowed cycle.
+ *
+ * Rationale (measured on BioGAP with an ExG noise-injection sweep): when
+ * the PMIC drives SDA during an I2C read, it sinks the pull-up current
+ * through its die ground and the bounce couples into the regulators that
+ * feed the AFE. I2C writes and AMUX/SAADC measurements are clean.
+ *
+ * @param allowed Returns true when full cycles may run. Must be fast and
+ *                callable from the power thread. Pass NULL to remove.
+ */
+void pwr_set_measurement_gate(bool (*allowed)(void));
+
+/** @brief True if no measurement gate is registered or it currently allows. */
+bool pwr_measurements_allowed(void);
+
 // Configure GAP9 power supply
 void gap9_pwr(bool);
 

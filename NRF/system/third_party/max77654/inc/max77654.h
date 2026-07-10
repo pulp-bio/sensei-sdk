@@ -799,6 +799,20 @@ max77654_err_t max77654_config_global(const struct max77654_h *h);
 max77654_err_t max77654_config_charger(const struct max77654_h *h);
 
 /**
+ * @brief Enable or disable the battery charger without touching any other
+ * charger configuration (read-modify-write of only the CHG_EN bit).
+ *
+ * Intended for briefly pausing the charger, e.g. to measure the battery's
+ * rest voltage while external power is attached. Does not modify the
+ * configuration stored in the handle struct.
+ *
+ * @param h Pointer to the device-specific handle struct.
+ * @param en true to enable the charger, false to disable it.
+ * @return @ref E_MAX77654_SUCCESS if successful, otherwise an error code from @ref max77654_err_t.
+ */
+max77654_err_t max77654_set_charger_enabled(const struct max77654_h *h, bool en);
+
+/**
  * @brief Configures the watchdog timer.
  * Applies the watchdog timer configurations from within the handle struct to the device.
  *
