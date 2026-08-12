@@ -209,16 +209,23 @@ static void thread_pwr(void *_a, void *_b, void *_c) {
         err = -1;
       }
 
-      // Measure VSYS/CHGIN/battery currents and derived power (uses the
-      // previous cycle's battery voltage for the power values, where the
-      // staleness is negligible):
-      if (check_telemetry() < 0) {
-        err = -1;
-      }
+      /* Both measurements below go through the battery-monitor ADC, so they are
+       * skipped whenever the application has claimed that pin (see
+       * pwr_set_adc_gate). Reading it would not just be inaccurate: the SAADC
+       * channel setup switches the pad to analog mode and drops the
+       * application's drive. */
+      if (pwr_adc_allowed()) {
+        // Measure VSYS/CHGIN/battery currents and derived power (uses the
+        // previous cycle's battery voltage for the power values, where the
+        // staleness is negligible):
+        if (check_telemetry() < 0) {
+          err = -1;
+        }
 
-      // Measure battery level, issuing battery ok / critical / low events:
-      if (check_battery() < 0) {
-        err = -1;
+        // Measure battery level, issuing battery ok / critical / low events:
+        if (check_battery() < 0) {
+          err = -1;
+        }
       }
 
       // Handle interrupts from PMIC
@@ -234,13 +241,19 @@ static void thread_pwr(void *_a, void *_b, void *_c) {
           err = -1;
         };
       }
-    } else if (!atomic_get(&pmic_status_dirty) && !pmic.status.charging_active &&
+    } else if (pwr_adc_allowed() && !atomic_get(&pmic_status_dirty) &&
+               !pmic.status.charging_active &&
                (k_uptime_get() - last_meas_ms) >= THREAD_PWR_QUIET_UPDATE_PERIOD_MS) {
       /* Quiet cycle: write-only measurements against the cached (frozen)
        * status flags, at the slower THREAD_PWR_QUIET_UPDATE_PERIOD_MS
        * cadence. Not while charging - the rest-voltage sampling in
        * check_battery would toggle the charger (a read-modify-write, and a
-       * charge-current step); hold the values instead until the veto ends. */
+       * charge-current step); hold the values instead until the veto ends.
+       *
+       * "Write-only" refers to the PMIC I2C traffic; both measurements still
+       * use the battery-monitor ADC, so pwr_adc_allowed() must hold as well.
+       * An application that has claimed that pin needs this cycle suppressed
+       * too, not just the full one. */
       last_meas_ms = k_uptime_get();
       if (check_telemetry() < 0) {
         err = -1;

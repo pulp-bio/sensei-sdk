@@ -245,6 +245,15 @@ bool pwr_measurements_allowed(void) {
   return (gate == NULL) || gate();
 }
 
+static bool (*pwr_adc_gate)(void);
+
+void pwr_set_adc_gate(bool (*allowed)(void)) { pwr_adc_gate = allowed; }
+
+bool pwr_adc_allowed(void) {
+  bool (*gate)(void) = pwr_adc_gate;
+  return (gate == NULL) || gate();
+}
+
 void pwr_get_status(struct pwr_status *out) {
   __ASSERT_NO_MSG(atomic_get(&pwr_is_initialised) == true);
 

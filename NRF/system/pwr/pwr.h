@@ -114,6 +114,30 @@ void pwr_set_measurement_gate(bool (*allowed)(void));
 /** @brief True if no measurement gate is registered or it currently allows. */
 bool pwr_measurements_allowed(void);
 
+/**
+ * @brief Register a veto on using the battery-monitor ADC at all.
+ *
+ * Distinct from the measurement gate above, which only suppresses *full*
+ * cycles: while it vetoes, the power thread still runs reduced "quiet" cycles
+ * because I2C writes and AMUX/SAADC measurements are electrically clean. That
+ * reasoning holds only while the ADC pin belongs to the ADC.
+ *
+ * On boards where the battery-monitor input is multiplexed with an output the
+ * application drives (BioGAP: P0.07 / AIN3 is also the mmWave shield's
+ * power-enable), a measurement is not merely inaccurate — Zephyr's SAADC driver
+ * re-applies the channel input on every read, which switches the pad to analog
+ * mode and drops the application's drive. Whatever that pin was holding up
+ * turns off. Register this gate so no measurement path touches the ADC while
+ * the pin is in use.
+ *
+ * @param allowed Returns true when the ADC may be used. Must be fast and
+ *                callable from the power thread. Pass NULL to remove.
+ */
+void pwr_set_adc_gate(bool (*allowed)(void));
+
+/** @brief True if no ADC gate is registered or it currently allows. */
+bool pwr_adc_allowed(void);
+
 // Configure GAP9 power supply
 void gap9_pwr(bool);
 
