@@ -1,0 +1,57 @@
+# Copyright (c) 2026 ETH Zurich and University of Bologna
+# SPDX-License-Identifier: Apache-2.0
+---
+
+description: |
+  Infineon XENSIV BGT60TR13C 60 GHz FMCW radar sensor.
+
+  The node carries the radar's pin assignment and bus parameters. It sits on
+  SPI_A, and BioGAP can drive it through either of two transports:
+
+    - the Zephyr SPI subsystem, where the node becomes a spi_dt_spec and the
+      radar owns the bus outright (radar-only images), or
+    - the raw nrfx SPIM driver behind BioGAP's shared SPI_A arbitration layer
+      (spi/spi_a.c), so the radar can share the bus with the ADS1298 AFEs and
+      the WiFi/SD shield.
+
+  Either way chip select is a plain GPIO (manual-cs-gpios) rather than a
+  controller cs-gpios entry, because several devices share the bus and the
+  radar's protocol needs CS held across multi-transfer transactions.
+
+compatible: "infineon,bgt60tr13c"
+
+# Supplies reg, spi-max-frequency, and the duplex / frame-format / spi-cpol /
+# spi-cpha properties that SPI_CONFIG_DT() reads when the node is turned into a
+# spi_dt_spec. Declaring reg and spi-max-frequency by hand instead is not
+# enough: the missing duplex and frame-format defaults make SPI_DT_SPEC_GET()
+# fail to compile. Leaving spi-cpol and spi-cpha unset yields SPI mode 0, which
+# is what the radar requires.
+include: spi-device.yaml
+
+properties:
+  irq-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      Radar interrupt output (IRQ). Asserted when the FIFO fill level reaches
+      the configured limit, i.e. when a complete frame can be read.
+
+  reset-gpios:
+    type: phandle-array
+    required: true
+    description: Hardware reset input of the radar (active low)
+
+  power-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      Enables the shield's power rail. On BioGAP this pin is shared with the
+      battery-monitor ADC input, so the SAADC channel must be released while
+      the radar is powered.
+
+  manual-cs-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      Chip select (active low), toggled in software by the driver because
+      several devices share SPI_A.

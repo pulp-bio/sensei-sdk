@@ -1,0 +1,59 @@
+/*
+ * Copyright (c) 2026 ETH Zurich and University of Bologna
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * SENSEI mmWave shield (Infineon XENSIV BGT60TR13C 60 GHz FMCW radar).
+ *
+ * The radar sits on SPI_A (SPIM4, defined in the board DTS: SCK P0.08 /
+ * MOSI P0.09 / MISO P0.10). Chip select is a software-toggled GPIO because
+ * SPI_A is shared with the ADS1298 AFEs and the WiFi/SD shield, and BioGAP
+ * arbitrates the bus itself (spi/spi_a.c) using the raw nrfx SPIM driver.
+ * For that reason the node below is a data-only child of &spi_a: it carries
+ * the pin assignment and bus parameters, and no Zephyr SPI driver binds to it.
+ *
+ * Shield signals:
+ *   CS    = P1.11 (active low, software controlled)
+ *   IRQ   = P0.12 (FIFO fill-level interrupt, rising edge)
+ *   RST   = P0.04 (active low)
+ *   PWR   = P0.07 (shield power rail enable)
+ *
+ * Pin conflicts to be aware of (see the Shield_compatibility tab of
+ * BioGAP_pinout_board-to-board_connectors.xlsx):
+ *   P0.04 / P0.12 are the PDM microphone CLK / DATA lines. The radar and the
+ *     onboard microphone cannot be used at the same time; the BioGAP
+ *     application disables &pdm0 in its mmWave build overlay.
+ *   P0.12 is also the PPG shield's wired-OR INTB line.
+ *   P0.07 is the battery-monitor ADC input (SAADC AIN3). The application
+ *     releases the SAADC channel while the radar is powered, so battery
+ *     telemetry is unavailable in that window.
+ */
+
+/*
+ * The radar's four control lines are declared only as properties of the bgt60
+ * node below, deliberately not also as children of a "gpio-leds" node the way
+ * the other SENSEI shields declare their GPIOs.
+ *
+ * A "gpio-leds" node is bound by Zephyr's leds-gpio driver whenever CONFIG_LED
+ * is enabled, and that driver configures every child pin as an output during
+ * boot. For this shield that would be actively harmful: it would drive the
+ * radar's RST, CS and power-enable lines before the application has decided
+ * what they should be, and P0.07 doubles as the battery-monitor ADC input
+ * (SAADC AIN3), so claiming it as a GPIO output breaks battery telemetry for
+ * the whole image. The application owns these pins instead
+ * (sensors/mmWave/mmWave_appl.c and mmWave_spi.c).
+ */
+
+/* Data-only node on the shared SPI_A bus. reg = <1> keeps the unit address
+ * distinct from the ExG shield's ads1298_a@0; it is not used as a hardware
+ * chip-select index, since CS is driven through manual-cs-gpios. */
+&spi_a {
+	bgt60: bgt60@1 {
+		compatible = "infineon,bgt60tr13c";
+		reg = <1>;
+		spi-max-frequency = <8000000>;
+		manual-cs-gpios = <&gpio1 11 GPIO_ACTIVE_LOW>;
+		irq-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+		power-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+	};
+};
